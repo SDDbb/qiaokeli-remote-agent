@@ -13,7 +13,7 @@ DEFAULT_SHARED_ROOT = Path.home() / "Sync" / "30_Projects" / "remote_agent"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Submit a local remote-agent command")
-    parser.add_argument("--type", default="status", choices=["status", "openclaw", "shell", "read_file", "natural"])
+    parser.add_argument("--type", default="status", choices=["status", "openclaw", "codex", "shell", "read_file", "natural"])
     parser.add_argument("--message", default="", help="Message for openclaw or natural mode")
     parser.add_argument("--cmd", default="", help="Shell command")
     parser.add_argument("--path", default="", help="Path for read_file")
@@ -52,6 +52,8 @@ def main() -> int:
         payload["message"] = args.message or "汇报当前主机状态"
         if args.agent:
             payload["agent"] = args.agent
+    elif args.type == "codex":
+        payload["prompt"] = args.message or "Reply with one short line: codex-ok"
     elif args.type == "shell":
         payload["cmd"] = args.cmd or "uname -a"
     elif args.type == "read_file":

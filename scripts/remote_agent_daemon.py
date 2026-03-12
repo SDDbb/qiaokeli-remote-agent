@@ -9,6 +9,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+import re
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -26,6 +27,9 @@ DEFAULT_CONFIG = {
     "QIAOKELI_REMOTE_AGENT_OPENCLAW_AGENT": "resident",
     "QIAOKELI_REMOTE_AGENT_OPENCLAW_TIMEOUT": "240",
     "OPENCLAW_BIN": "/home/zhujintao/.nvm/versions/node/v22.22.0/bin/openclaw",
+    "CODEX_BIN": "/home/zhujintao/.nvm/versions/node/v22.22.0/bin/codex",
+    "QIAOKELI_REMOTE_AGENT_CODEX_TIMEOUT": "300",
+    "QIAOKELI_REMOTE_AGENT_CODEX_WORKDIR": str(Path.home() / "桌面" / "数据筛选LLM"),
 }
 
 
@@ -188,6 +192,65 @@ def handle_openclaw(command: dict[str, Any], config: dict[str, str]) -> dict[str
     return {"agent": agent, "reply": parsed["text"], "meta": parsed["meta"]}
 
 
+def launch_codex_job(
+    command: dict[str, Any],
+    command_id: str,
+    input_mode: str,
+    config: dict[str, str],
+    paths: dict[str, Path],
+) -> dict[str, Any]:
+    prompt = str(command.get("prompt") or command.get("message", "")).strip()
+    if not prompt:
+        raise ValueError("missing codex prompt")
+    timeout = int(command.get("timeout") or config["QIAOKELI_REMOTE_AGENT_CODEX_TIMEOUT"])
+    cwd = str(command.get("cwd") or config["QIAOKELI_REMOTE_AGENT_CODEX_WORKDIR"]).strip()
+    workdir = Path(cwd).expanduser().resolve()
+    if not workdir.exists():
+        raise FileNotFoundError(str(workdir))
+
+    prompt_path = PROJECT_ROOT / "runtime" / f"{command_id}.prompt.txt"
+    prompt_path.write_text(prompt + "\n")
+    response_path = paths["responses"] / f"{command_id}.json"
+    job_script = PROJECT_ROOT / "scripts" / "remote_agent_codex_job.py"
+
+    subprocess.Popen(
+        [
+            "/usr/bin/python3",
+            str(job_script),
+            "--command-id",
+            command_id,
+            "--prompt-file",
+            str(prompt_path),
+            "--response-file",
+            str(response_path),
+            "--workdir",
+            str(workdir),
+            "--codex-bin",
+            config["CODEX_BIN"],
+            "--timeout",
+            str(timeout),
+            "--max-output-chars",
+            config["QIAOKELI_REMOTE_AGENT_MAX_OUTPUT_CHARS"],
+            "--host",
+            socket.gethostname(),
+            "--input-mode",
+            input_mode,
+        ],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return {
+        "workdir": str(workdir),
+        "reply": "Codex 任务已接受，正在后台执行。请稍后刷新同名 response 文件查看最终结果。",
+        "meta": {
+            "tool": "codex-cli",
+            "timeout_seconds": timeout,
+            "async": True,
+        },
+    }
+
+
 def handle_shell(command: dict[str, Any], config: dict[str, str]) -> dict[str, Any]:
     cmd = str(command.get("cmd", "")).strip()
     if not cmd:
@@ -228,12 +291,14 @@ def handle_status(_command: dict[str, Any], _config: dict[str, str]) -> dict[str
     return host_status()
 
 
-def process_command(command: dict[str, Any], config: dict[str, str]) -> dict[str, Any]:
+def process_command(command: dict[str, Any], config: dict[str, str], command_id: str, input_mode: str, paths: dict[str, Path]) -> dict[str, Any]:
     command_type = str(command.get("type", "status")).strip().lower()
     if command_type == "status":
         return handle_status(command, config)
     if command_type == "openclaw":
         return handle_openclaw(command, config)
+    if command_type == "codex":
+        return launch_codex_job(command, command_id, input_mode, config, paths)
     if command_type == "shell":
         return handle_shell(command, config)
     if command_type == "read_file":
@@ -256,9 +321,11 @@ def build_examples(paths: dict[str, Path]) -> None:
     examples = {
         "status.json": {"id": "phone-status", "type": "status"},
         "openclaw.json": {"id": "phone-openclaw", "type": "openclaw", "message": "汇报当前主机状态"},
+        "codex.json": {"id": "phone-codex", "type": "codex", "prompt": "检查当前仓库 README 有没有明显问题，并直接给结论"},
         "shell.json": {"id": "phone-shell", "type": "shell", "cmd": "uname -a"},
         "read_file.json": {"id": "phone-read-file", "type": "read_file", "path": str(Path.home() / ".openclaw" / "workspace" / "authorized_research" / "memory" / "rolling_memory.md")},
         "natural-language.txt": "巧克力，汇报当前主机状态，并告诉我 Syncthing 和 OpenClaw 是否正常。",
+        "natural-codex.txt": "让 Codex 检查当前仓库 README 有没有明显问题，并直接告诉我结论。",
     }
     for name, body in examples.items():
         target = paths["examples"] / name
@@ -289,6 +356,19 @@ def parse_command_file(path: Path, mode: str) -> dict[str, Any]:
     if mode == "json":
         return json.loads(path.read_text())
     message = path.read_text(errors="ignore").strip()
+    lowered = message.lower()
+    codex_markers = [
+        r"^\s*/?codex[:：\s]",
+        r"^\s*让\s*codex",
+        r"^\s*调用\s*codex",
+        r"^\s*请\s*codex",
+        r"^\s*让\s*vscode.*codex",
+        r"^\s*调用\s*vscode.*codex",
+    ]
+    for pattern in codex_markers:
+        if re.search(pattern, lowered, flags=re.I):
+            prompt = re.sub(pattern, "", message, count=1, flags=re.I).strip("：:，, \n\t")
+            return {"id": path.stem, "type": "codex", "prompt": prompt or message}
     return {"id": path.stem, "type": "openclaw", "message": message}
 
 
@@ -320,12 +400,13 @@ def main() -> int:
                 command_id = str(command.get("id") or path.stem)
                 started_at = now_iso()
                 try:
-                    result = process_command(command, config)
+                    result = process_command(command, config, command_id, mode, paths)
                     response = {
                         "id": command_id,
                         "ok": True,
                         "type": str(command.get("type", "openclaw")),
                         "input_mode": mode,
+                        "status": "accepted" if str(command.get("type", "")).strip().lower() == "codex" else "completed",
                         "received_at": started_at,
                         "finished_at": now_iso(),
                         "host": socket.gethostname(),

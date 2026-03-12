@@ -19,6 +19,7 @@ Structured commands:
 Natural-language commands:
 - drop plain text files into `inbox/`
 - the daemon treats them as `openclaw` tasks automatically
+- if the text clearly asks for `codex`, it routes to local `codex exec`
 
 ## Shared folder
 
@@ -39,6 +40,7 @@ Layout:
 
 - `status`
 - `openclaw`
+- `codex`
 - `shell`
 - `read_file`
 
@@ -78,8 +80,18 @@ The daemon will write the answer into:
 ~/Sync/30_Projects/remote_agent/responses/<same-stem>.json
 ```
 
+Codex example:
+
+```text
+让 Codex 检查当前仓库 README 有没有明显问题，并直接告诉我结论。
+```
+
+This does not click the VS Code extension UI directly. It calls the local
+`codex` CLI on the Fedora host and returns the result through the mailbox.
+
 ## Notes
 
 - `openclaw` tasks default to the `resident` agent
+- `codex` tasks default to the local Codex CLI workdir configured in `config.env`
 - natural-language tasks are asynchronous, not live RPC
 - this is optimized for reliability and simple cross-device use
