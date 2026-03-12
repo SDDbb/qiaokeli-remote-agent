@@ -161,9 +161,11 @@ def handle_openclaw(command: dict[str, Any], config: dict[str, str]) -> dict[str
     message = str(command.get("message", "")).strip()
     if not message:
         raise ValueError("missing openclaw message")
+    live_status = json.dumps(host_status(), ensure_ascii=False)
     wrapped_message = (
         "On this Fedora host, perform the task with real tools when needed. "
-        "Do not guess about local state. Respond concisely in Chinese.\n\n"
+        "Do not guess about local state. Respond concisely in Chinese and give the final answer directly.\n\n"
+        f"Live host facts you can trust:\n{live_status}\n\n"
         f"User task:\n{message}"
     )
     rc, out, err = run_cmd(
