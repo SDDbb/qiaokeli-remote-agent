@@ -20,6 +20,7 @@ Natural-language commands:
 - drop plain text files into `inbox/`
 - the daemon treats them as `openclaw` tasks automatically
 - if the text clearly asks for `codex`, it routes to local `codex exec`
+- if the text asks for `百炼/Bailian` and `Codex` together, it routes to the hybrid pipeline
 
 ## Shared folder
 
@@ -41,6 +42,7 @@ Layout:
 - `status`
 - `openclaw`
 - `codex`
+- `hybrid`
 - `shell`
 - `read_file`
 
@@ -88,10 +90,39 @@ Codex example:
 
 This does not click the VS Code extension UI directly. It calls the local
 `codex` CLI on the Fedora host and returns the result through the mailbox.
+The first response may show `status: accepted`; the same response file is then
+overwritten with the final `completed` result after Codex finishes.
+
+Hybrid example:
+
+```text
+先让百炼执行，再让 Codex 审阅：检查当前仓库 README 有没有明显问题，并直接告诉我最终结论。
+```
+
+This routes to the Bailian-backed OpenClaw worker first, then sends the worker
+draft to the local `codex` CLI for final review.
+
+## Desktop use with Codex
+
+If you are working directly on the Fedora desktop, use:
+
+```bash
+qiaokeli-hybrid-run "先让百炼执行，再让 Codex 审阅：检查当前仓库 README 有没有明显问题，并给出最终结论。"
+```
+
+This is the intended path when you are chatting with Codex in VS Code and want
+Codex to dispatch low-cost execution work to Bailian in the background.
+
+Keyword convention for this repo:
+
+- if you tell Codex `tokensave`, it should prefer this hybrid pipeline
+- local helper: `qiaokeli-tokensave "你的任务"`
+- repo script helper: `scripts/tokensave_local.sh "你的任务"`
 
 ## Notes
 
 - `openclaw` tasks default to the `resident` agent
 - `codex` tasks default to the local Codex CLI workdir configured in `config.env`
+- `hybrid` tasks use Bailian via OpenClaw for the execution draft, then Codex for the final review
 - natural-language tasks are asynchronous, not live RPC
 - this is optimized for reliability and simple cross-device use

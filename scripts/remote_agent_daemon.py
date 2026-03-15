@@ -30,6 +30,8 @@ DEFAULT_CONFIG = {
     "CODEX_BIN": "/home/zhujintao/.nvm/versions/node/v22.22.0/bin/codex",
     "QIAOKELI_REMOTE_AGENT_CODEX_TIMEOUT": "300",
     "QIAOKELI_REMOTE_AGENT_CODEX_WORKDIR": str(Path.home() / "桌面" / "数据筛选LLM"),
+    "QIAOKELI_REMOTE_AGENT_HYBRID_AGENT": "resident",
+    "QIAOKELI_REMOTE_AGENT_HYBRID_TIMEOUT": "420",
 }
 
 
@@ -251,6 +253,70 @@ def launch_codex_job(
     }
 
 
+def launch_hybrid_job(
+    command: dict[str, Any],
+    command_id: str,
+    input_mode: str,
+    config: dict[str, str],
+    paths: dict[str, Path],
+) -> dict[str, Any]:
+    prompt = str(command.get("prompt") or command.get("message", "")).strip()
+    if not prompt:
+        raise ValueError("missing hybrid prompt")
+    timeout = int(command.get("timeout") or config["QIAOKELI_REMOTE_AGENT_HYBRID_TIMEOUT"])
+    workdir = Path(str(command.get("cwd") or config["QIAOKELI_REMOTE_AGENT_CODEX_WORKDIR"]).strip()).expanduser().resolve()
+    if not workdir.exists():
+        raise FileNotFoundError(str(workdir))
+
+    prompt_path = PROJECT_ROOT / "runtime" / f"{command_id}.hybrid.prompt.txt"
+    prompt_path.write_text(prompt + "\n")
+    response_path = paths["responses"] / f"{command_id}.json"
+    job_script = PROJECT_ROOT / "scripts" / "remote_agent_hybrid_job.py"
+    agent = str(command.get("agent") or config["QIAOKELI_REMOTE_AGENT_HYBRID_AGENT"]).strip()
+
+    subprocess.Popen(
+        [
+            "/usr/bin/python3",
+            str(job_script),
+            "--command-id",
+            command_id,
+            "--prompt-file",
+            str(prompt_path),
+            "--response-file",
+            str(response_path),
+            "--workdir",
+            str(workdir),
+            "--openclaw-bin",
+            config["OPENCLAW_BIN"],
+            "--openclaw-agent",
+            agent,
+            "--codex-bin",
+            config["CODEX_BIN"],
+            "--timeout",
+            str(timeout),
+            "--max-output-chars",
+            config["QIAOKELI_REMOTE_AGENT_MAX_OUTPUT_CHARS"],
+            "--host",
+            socket.gethostname(),
+            "--input-mode",
+            input_mode,
+        ],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return {
+        "workdir": str(workdir),
+        "reply": "百炼执行层任务已接受，正在由 Bailian 产出草案并交给 Codex 审阅。请稍后刷新同名 response 文件查看最终结果。",
+        "meta": {
+            "tool": "bailian+codex",
+            "timeout_seconds": timeout,
+            "async": True,
+            "review_required": True,
+        },
+    }
+
+
 def handle_shell(command: dict[str, Any], config: dict[str, str]) -> dict[str, Any]:
     cmd = str(command.get("cmd", "")).strip()
     if not cmd:
@@ -299,6 +365,8 @@ def process_command(command: dict[str, Any], config: dict[str, str], command_id:
         return handle_openclaw(command, config)
     if command_type == "codex":
         return launch_codex_job(command, command_id, input_mode, config, paths)
+    if command_type == "hybrid":
+        return launch_hybrid_job(command, command_id, input_mode, config, paths)
     if command_type == "shell":
         return handle_shell(command, config)
     if command_type == "read_file":
@@ -322,10 +390,12 @@ def build_examples(paths: dict[str, Path]) -> None:
         "status.json": {"id": "phone-status", "type": "status"},
         "openclaw.json": {"id": "phone-openclaw", "type": "openclaw", "message": "汇报当前主机状态"},
         "codex.json": {"id": "phone-codex", "type": "codex", "prompt": "检查当前仓库 README 有没有明显问题，并直接给结论"},
+        "hybrid.json": {"id": "phone-hybrid", "type": "hybrid", "prompt": "先让百炼为当前任务生成执行草案，再让 Codex 做最终审阅，任务是：检查当前仓库 README 有没有明显问题，并给出最终结论。"},
         "shell.json": {"id": "phone-shell", "type": "shell", "cmd": "uname -a"},
         "read_file.json": {"id": "phone-read-file", "type": "read_file", "path": str(Path.home() / ".openclaw" / "workspace" / "authorized_research" / "memory" / "rolling_memory.md")},
         "natural-language.txt": "巧克力，汇报当前主机状态，并告诉我 Syncthing 和 OpenClaw 是否正常。",
         "natural-codex.txt": "让 Codex 检查当前仓库 README 有没有明显问题，并直接告诉我结论。",
+        "natural-hybrid.txt": "先让百炼执行，再让 Codex 审阅：检查当前仓库 README 有没有明显问题，并直接告诉我最终结论。",
     }
     for name, body in examples.items():
         target = paths["examples"] / name
@@ -357,7 +427,25 @@ def parse_command_file(path: Path, mode: str) -> dict[str, Any]:
         return json.loads(path.read_text())
     message = path.read_text(errors="ignore").strip()
     lowered = message.lower()
-    codex_markers = [
+    hybrid_prefix_markers = [
+        r"^\s*/?hybrid[:：\s]",
+        r"^\s*(先)?让\s*(百炼|bailian)",
+        r"^\s*(先)?用\s*(百炼|bailian)",
+    ]
+    for pattern in hybrid_prefix_markers:
+        if re.search(pattern, lowered, flags=re.I) and re.search(r"(codex|审阅|审查|review|复核)", lowered, flags=re.I):
+            prompt = re.sub(pattern, "", message, count=1, flags=re.I).strip("：:，, \n\t")
+            return {"id": path.stem, "type": "hybrid", "prompt": prompt or message}
+
+    hybrid_anywhere_markers = [
+        r"(百炼|bailian).{0,24}(codex|审阅|审查|review|复核)",
+        r"(先).{0,24}(百炼|bailian).{0,40}(再).{0,24}(codex|审阅|审查|review|复核)",
+    ]
+    for pattern in hybrid_anywhere_markers:
+        if re.search(pattern, lowered, flags=re.I):
+            return {"id": path.stem, "type": "hybrid", "prompt": message}
+
+    codex_prefix_markers = [
         r"^\s*/?codex[:：\s]",
         r"^\s*让\s*codex",
         r"^\s*调用\s*codex",
@@ -365,10 +453,19 @@ def parse_command_file(path: Path, mode: str) -> dict[str, Any]:
         r"^\s*让\s*vscode.*codex",
         r"^\s*调用\s*vscode.*codex",
     ]
-    for pattern in codex_markers:
+    for pattern in codex_prefix_markers:
         if re.search(pattern, lowered, flags=re.I):
             prompt = re.sub(pattern, "", message, count=1, flags=re.I).strip("：:，, \n\t")
             return {"id": path.stem, "type": "codex", "prompt": prompt or message}
+
+    codex_anywhere_markers = [
+        r"(让|请|调用|使用|用).{0,24}(vscode|vs\s*code)?.{0,24}codex",
+        r"(vscode|vs\s*code).{0,24}codex",
+        r"codex.{0,24}(回复|回答|执行|检查|查看|发|发送|告诉我|回给我)",
+    ]
+    for pattern in codex_anywhere_markers:
+        if re.search(pattern, lowered, flags=re.I):
+            return {"id": path.stem, "type": "codex", "prompt": message}
     return {"id": path.stem, "type": "openclaw", "message": message}
 
 
@@ -406,7 +503,7 @@ def main() -> int:
                         "ok": True,
                         "type": str(command.get("type", "openclaw")),
                         "input_mode": mode,
-                        "status": "accepted" if str(command.get("type", "")).strip().lower() == "codex" else "completed",
+                        "status": "accepted" if str(command.get("type", "")).strip().lower() in {"codex", "hybrid"} else "completed",
                         "received_at": started_at,
                         "finished_at": now_iso(),
                         "host": socket.gethostname(),
