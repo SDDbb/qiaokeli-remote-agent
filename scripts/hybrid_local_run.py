@@ -69,16 +69,24 @@ def main() -> int:
 
     worker = hybrid.run_bailian_worker(runner_args, prompt)
     review = hybrid.run_codex_review(runner_args, prompt, worker)
+    execution = hybrid.execute_approved_actions(runner_args, prompt, worker, review)
+    final_reply = str(review.get("final_reply", "")).strip()
+    if str(execution.get("status", "")).strip().lower() == "executed":
+        final_reply = str(execution.get("summary", final_reply)).strip() or final_reply
     result = {
         "ok": True,
         "prompt": prompt,
         "result": {
-            "reply": str(review.get("final_reply", "")).strip(),
+            "reply": final_reply,
             "worker": worker,
             "review": review,
+            "execution": execution,
             "meta": {
-                "worker": "openclaw-bailian",
+                "worker": str(worker.get("worker_backend", "direct_bailian")),
                 "reviewer": "codex-cli",
+                "mode": worker.get("mode", "general"),
+                "review_profile": worker.get("classification", {}).get("review_profile", "standard"),
+                "engineering_context": worker.get("engineering_context", worker.get("classification", {}).get("engineering_context", "none")),
             },
         },
     }
