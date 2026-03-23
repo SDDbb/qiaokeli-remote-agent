@@ -22,6 +22,7 @@ class SimpleTerminalClient:
         self.auth_token = auth_token
         self.websocket = None
         self.running = True
+        self.input_queue = asyncio.Queue()
     
     async def connect(self):
         """Connect to the tunnel server."""
@@ -47,6 +48,9 @@ class SimpleTerminalClient:
                 thread = threading.Thread(target=self.read_stdin, daemon=True)
                 thread.start()
                 
+                # Create input processing task
+                input_task = asyncio.create_task(self.process_input_queue())
+                
                 # Process messages from server
                 async for message in websocket:
                     if not self.running:
@@ -70,49 +74,55 @@ class SimpleTerminalClient:
                     except json.JSONDecodeError:
                         # Raw output - print directly
                         print(message, end="", flush=True)
+                
+                input_task.cancel()
             
             print("\nDisconnected from server")
         except Exception as e:
             print(f"\nConnection error: {e}")
     
     def read_stdin(self):
-        """Read from stdin in background thread and send to server."""
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            # No event loop in thread, create new
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
+        """Read from stdin in background thread and put into queue."""
         while self.running:
             try:
                 line = sys.stdin.readline()
                 if not line:
                     self.running = False
                     break
-                if self.websocket and not self.websocket.closed:
-                    # Send as input
-                    future = asyncio.run_coroutine_threadsafe(
-                        self.send_input(line), loop
-                    )
-                    try:
-                        future.result(timeout=5)
-                    except Exception as e:
-                        print(f"\n[Client] Failed to send input: {e}", flush=True)
-                        break
+                # Put the line into queue for main async loop to process
+                future = asyncio.run_coroutine_threadsafe(
+                    self.input_queue.put(line),
+                    asyncio.get_event_loop()
+                )
+                future.result(timeout=5)
             except Exception as e:
                 print(f"\n[Client] Reader thread error: {e}", flush=True)
+                self.running = False
+                break
+    
+    async def process_input_queue(self):
+        """Process input queue in the main async loop."""
+        while self.running:
+            try:
+                line = await self.input_queue.get()
+                await self.send_input(line)
+                self.input_queue.task_done()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"\n[Client] Input processing error: {e}", flush=True)
                 break
     
     async def send_input(self, text: str):
-        """Send input to server."""
-        if self.websocket:
+        """Send input to the server."""
+        if self.websocket and not self.websocket.closed:
             try:
                 await self.websocket.send(json.dumps({
                     "type": "input",
                     "data": text
                 }))
-            except Exception:
+            except Exception as e:
+                print(f"\n[Client] Failed to send: {e}", flush=True)
                 self.running = False
 
 
