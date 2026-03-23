@@ -77,7 +77,13 @@ class SimpleTerminalClient:
     
     def read_stdin(self):
         """Read from stdin in background thread and send to server."""
-        loop = asyncio.get_event_loop()
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            # No event loop in thread, create new
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
         while self.running:
             try:
                 line = sys.stdin.readline()
@@ -89,8 +95,13 @@ class SimpleTerminalClient:
                     future = asyncio.run_coroutine_threadsafe(
                         self.send_input(line), loop
                     )
-                    future.result(timeout=5)
-            except Exception:
+                    try:
+                        future.result(timeout=5)
+                    except Exception as e:
+                        print(f"\n[Client] Failed to send input: {e}", flush=True)
+                        break
+            except Exception as e:
+                print(f"\n[Client] Reader thread error: {e}", flush=True)
                 break
     
     async def send_input(self, text: str):
