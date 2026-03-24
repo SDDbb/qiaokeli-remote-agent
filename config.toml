@@ -1,0 +1,27 @@
+# 服务端配置（运行openhands_tunnel_server.py在这里）
+# 完整配置，包含runtime、core、llm，直接用就行
+
+[runtime]
+name = "local"
+
+[core]
+debug = false
+workspace_base = "./workspace"
+agent_start_timeout = 120
+
+[llm]
+# 👇 这里已经预留，你只需要改成你的实际信息
+model = "gpt-4o"
+api_key = "YOUR_API_KEY_HERE"
+# base_url = "https://api.openai.com/v1"
+
+# 开箱即用的默认配置
+[agent]
+max_iterations = 100
+save_trajectory = true
+
+[security]
+# 安全配置，允许执行命令
+enable_commands = true
+allow_unsafe = false
+
