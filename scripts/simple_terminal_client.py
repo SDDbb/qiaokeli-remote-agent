@@ -23,10 +23,13 @@ class SimpleTerminalClient:
         self.websocket = None
         self.running = True
         self.input_queue = asyncio.Queue()
+        self.main_loop = None
     
     async def connect(self):
         """Connect to the tunnel server."""
         try:
+            # Save the main event loop reference for the background thread
+            self.main_loop = asyncio.get_event_loop()
             async with websockets.connect(self.url) as websocket:
                 self.websocket = websocket
                 print(f"Connected to {self.url}")
@@ -90,9 +93,14 @@ class SimpleTerminalClient:
                     self.running = False
                     break
                 # Put the line into queue for main async loop to process
+                # Use saved main loop reference to avoid thread-local lookup error
+                if self.main_loop is None:
+                    print(f"\n[Client] Error: main_loop not initialized", flush=True)
+                    self.running = False
+                    break
                 future = asyncio.run_coroutine_threadsafe(
                     self.input_queue.put(line),
-                    asyncio.get_event_loop()
+                    self.main_loop
                 )
                 future.result(timeout=5)
             except Exception as e:
