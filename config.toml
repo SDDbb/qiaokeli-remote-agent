@@ -10,10 +10,10 @@ workspace_base = "./workspace"
 agent_start_timeout = 120
 
 [llm]
-# 👇 这里已经预留，你只需要改成你的实际信息
-model = "gpt-4o"
-api_key = "YOUR_API_KEY_HERE"
-# base_url = "https://api.openai.com/v1"
+# 从环境变量读取已有配置
+model = "openai/ark-code-latest"
+api_key = "f14961b8-f672-4f96-a237-f69eeb738e43"
+base_url = "https://ark.cn-beijing.volces.com/api/coding/v3"
 
 # 开箱即用的默认配置
 [agent]
