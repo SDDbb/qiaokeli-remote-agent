@@ -123,8 +123,15 @@ class SimpleTerminalClient:
     
     async def send_input(self, text: str):
         """Send input to the server."""
-        if self.websocket and not self.websocket.closed:
+        if self.websocket:
             try:
+                # Check if closed via the right attribute for websockets library
+                # Different versions have different attribute names
+                closed = getattr(self.websocket, 'closed', getattr(self.websocket, 'close_code', None))
+                if closed:
+                    print(f"\n[Client] WebSocket is closed", flush=True)
+                    self.running = False
+                    return
                 await self.websocket.send(json.dumps({
                     "type": "input",
                     "data": text
