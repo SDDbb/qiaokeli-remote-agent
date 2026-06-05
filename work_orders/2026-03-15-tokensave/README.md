@@ -45,7 +45,7 @@ Added a repo-level rule in the main project:
 
 Key file:
 
-- `/home/zhujintao/桌面/数据筛选LLM/AGENTS.md`
+- `/home/zhujintao/桌面/01-finance/fin-agent/AGENTS.md`
 
 Added a local helper:
 

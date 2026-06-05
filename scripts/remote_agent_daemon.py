@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import socket
 import subprocess
 import time
@@ -26,13 +27,35 @@ DEFAULT_CONFIG = {
     "QIAOKELI_REMOTE_AGENT_MAX_OUTPUT_CHARS": "12000",
     "QIAOKELI_REMOTE_AGENT_OPENCLAW_AGENT": "resident",
     "QIAOKELI_REMOTE_AGENT_OPENCLAW_TIMEOUT": "240",
+    "QIAOKELI_REMOTE_AGENT_BROWSER_TIMEOUT": "180",
+    "QIAOKELI_REMOTE_AGENT_ANDROID_TIMEOUT": "60",
+    "ANDROID_ADB_BIN": str(Path.home() / ".local" / "opt" / "platform-tools" / "adb"),
+    "ANDROID_ADB_SERIAL": "",
+    "ANDROID_ADB_TARGET": "",
+    "ANDROID_UNLOCK_PIN": "",
     "OPENCLAW_BIN": "/home/zhujintao/.nvm/versions/node/v22.22.0/bin/openclaw",
     "CODEX_BIN": "/home/zhujintao/.nvm/versions/node/v22.22.0/bin/codex",
+    "QIAOKELI_OPENCLAW_ROOT": str(Path.home() / "桌面" / "03-infra" / "openclaw-host"),
     "QIAOKELI_REMOTE_AGENT_CODEX_TIMEOUT": "300",
-    "QIAOKELI_REMOTE_AGENT_CODEX_WORKDIR": str(Path.home() / "桌面" / "数据筛选LLM"),
+    "QIAOKELI_REMOTE_AGENT_CODEX_MODEL": "gpt-5.5",
+    "QIAOKELI_REMOTE_AGENT_CODEX_WORKDIR": str(Path.home() / "桌面" / "01-finance" / "fin-agent"),
+    "QIAOKELI_REMOTE_AGENT_MAX_AGENT_PERMISSION": "workspace_write",
+    "QIAOKELI_REMOTE_AGENT_READ_FILE_ROOTS": f"{PROJECT_ROOT}:{DEFAULT_SHARED_ROOT}",
+    "CLAUDE_BIN": "claude",
+    "QIAOKELI_REMOTE_AGENT_CLOUD_CODE_TIMEOUT": "300",
+    "QIAOKELI_REMOTE_AGENT_CLOUD_CODE_ARGS_DEFAULT": "",
+    "QIAOKELI_REMOTE_AGENT_CLOUD_CODE_ARGS_READ_ONLY": "--permission-mode plan",
+    "QIAOKELI_REMOTE_AGENT_CLOUD_CODE_ARGS_WORKSPACE_WRITE": "",
+    "QIAOKELI_REMOTE_AGENT_CLOUD_CODE_ARGS_FULL_ACCESS": "--permission-mode acceptEdits",
+    "QIAOKELI_REMOTE_AGENT_CLOUD_CODE_ARGS_BYPASS": "--permission-mode bypassPermissions",
+    "DEEPSEEK_BIN": str(Path.home() / ".local" / "bin" / "qiaokeli-cheap"),
+    "QIAOKELI_REMOTE_AGENT_DEEPSEEK_TIMEOUT": "120",
     "QIAOKELI_REMOTE_AGENT_HYBRID_AGENT": "resident",
     "QIAOKELI_REMOTE_AGENT_HYBRID_TIMEOUT": "420",
 }
+
+AGENT_PERMISSION_MODES = ("default", "read_only", "workspace_write", "full_access", "bypass")
+AGENT_PERMISSION_RANK = {name: index for index, name in enumerate(AGENT_PERMISSION_MODES)}
 
 
 def now_iso() -> str:
@@ -94,6 +117,49 @@ def trim_text(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 40] + "\n...[truncated]..."
+
+
+def normalize_agent_permission(value: object) -> str:
+    raw = str(value or "workspace_write").strip().lower().replace("-", "_")
+    aliases = {
+        "readonly": "read_only",
+        "read_only": "read_only",
+        "workspace": "workspace_write",
+        "workspace_write": "workspace_write",
+        "full": "full_access",
+        "full_access": "full_access",
+        "fullaccess": "full_access",
+        "bypass_permission": "bypass",
+        "bypass_permissions": "bypass",
+        "bypass": "bypass",
+        "default": "default",
+    }
+    mode = aliases.get(raw, raw)
+    if mode not in AGENT_PERMISSION_RANK:
+        raise ValueError(f"unsupported agent permission mode: {value}")
+    return mode
+
+
+def max_agent_permission(config: dict[str, str]) -> str:
+    return normalize_agent_permission(config.get("QIAOKELI_REMOTE_AGENT_MAX_AGENT_PERMISSION", "workspace_write"))
+
+
+def require_agent_permission(command: dict[str, Any], config: dict[str, str]) -> str:
+    requested = normalize_agent_permission(command.get("permission_mode"))
+    maximum = max_agent_permission(config)
+    if AGENT_PERMISSION_RANK[requested] > AGENT_PERMISSION_RANK[maximum]:
+        raise PermissionError(f"agent permission {requested} exceeds desktop maximum {maximum}")
+    return requested
+
+
+def read_file_roots(config: dict[str, str]) -> list[Path]:
+    raw = config.get("QIAOKELI_REMOTE_AGENT_READ_FILE_ROOTS", "")
+    roots: list[Path] = []
+    for item in raw.split(":"):
+        if not item.strip():
+            continue
+        roots.append(Path(item.strip()).expanduser().resolve())
+    return roots
 
 
 def run_cmd(args: list[str], timeout: int) -> tuple[int, str, str]:
@@ -194,6 +260,46 @@ def handle_openclaw(command: dict[str, Any], config: dict[str, str]) -> dict[str
     return {"agent": agent, "reply": parsed["text"], "meta": parsed["meta"]}
 
 
+def handle_browser(command: dict[str, Any], command_id: str, config: dict[str, str]) -> dict[str, Any]:
+    timeout = int(command.get("timeout") or config["QIAOKELI_REMOTE_AGENT_BROWSER_TIMEOUT"])
+    playbook_file = str(command.get("playbook_file", "")).strip()
+    playbook = command.get("playbook")
+    if not playbook_file and playbook is None:
+        raise ValueError("missing browser playbook")
+
+    runner = PROJECT_ROOT / "scripts" / "openclaw_browser_playbook.py"
+    temp_playbook: Path | None = None
+    try:
+        if playbook_file:
+            resolved_playbook = Path(playbook_file).expanduser().resolve()
+            if not resolved_playbook.exists():
+                raise FileNotFoundError(str(resolved_playbook))
+        else:
+            temp_playbook = PROJECT_ROOT / "runtime" / f"{command_id}.browser.playbook.json"
+            temp_playbook.write_text(json.dumps(playbook, ensure_ascii=False, indent=2) + "\n")
+            resolved_playbook = temp_playbook
+
+        rc, out, err = run_cmd(
+            [
+                "/usr/bin/python3",
+                str(runner),
+                "--playbook-file",
+                str(resolved_playbook),
+                "--openclaw-bin",
+                config["OPENCLAW_BIN"],
+                "--timeout",
+                str(timeout),
+            ],
+            timeout=timeout + 30,
+        )
+        if rc != 0:
+            raise RuntimeError(err.strip() or out.strip() or "browser playbook failed")
+        return json.loads(out)
+    finally:
+        if temp_playbook is not None:
+            temp_playbook.unlink(missing_ok=True)
+
+
 def launch_codex_job(
     command: dict[str, Any],
     command_id: str,
@@ -204,6 +310,7 @@ def launch_codex_job(
     prompt = str(command.get("prompt") or command.get("message", "")).strip()
     if not prompt:
         raise ValueError("missing codex prompt")
+    permission_mode = require_agent_permission(command, config)
     timeout = int(command.get("timeout") or config["QIAOKELI_REMOTE_AGENT_CODEX_TIMEOUT"])
     cwd = str(command.get("cwd") or config["QIAOKELI_REMOTE_AGENT_CODEX_WORKDIR"]).strip()
     workdir = Path(cwd).expanduser().resolve()
@@ -229,6 +336,10 @@ def launch_codex_job(
             str(workdir),
             "--codex-bin",
             config["CODEX_BIN"],
+            "--codex-model",
+            str(command.get("codex_model") or config["QIAOKELI_REMOTE_AGENT_CODEX_MODEL"]),
+            "--permission-mode",
+            permission_mode,
             "--timeout",
             str(timeout),
             "--max-output-chars",
@@ -248,71 +359,8 @@ def launch_codex_job(
         "meta": {
             "tool": "codex-cli",
             "timeout_seconds": timeout,
+            "permission_mode": permission_mode,
             "async": True,
-        },
-    }
-
-
-def launch_hybrid_job(
-    command: dict[str, Any],
-    command_id: str,
-    input_mode: str,
-    config: dict[str, str],
-    paths: dict[str, Path],
-) -> dict[str, Any]:
-    prompt = str(command.get("prompt") or command.get("message", "")).strip()
-    if not prompt:
-        raise ValueError("missing hybrid prompt")
-    timeout = int(command.get("timeout") or config["QIAOKELI_REMOTE_AGENT_HYBRID_TIMEOUT"])
-    workdir = Path(str(command.get("cwd") or config["QIAOKELI_REMOTE_AGENT_CODEX_WORKDIR"]).strip()).expanduser().resolve()
-    if not workdir.exists():
-        raise FileNotFoundError(str(workdir))
-
-    prompt_path = PROJECT_ROOT / "runtime" / f"{command_id}.hybrid.prompt.txt"
-    prompt_path.write_text(prompt + "\n")
-    response_path = paths["responses"] / f"{command_id}.json"
-    job_script = PROJECT_ROOT / "scripts" / "remote_agent_hybrid_job.py"
-    agent = str(command.get("agent") or config["QIAOKELI_REMOTE_AGENT_HYBRID_AGENT"]).strip()
-
-    subprocess.Popen(
-        [
-            "/usr/bin/python3",
-            str(job_script),
-            "--command-id",
-            command_id,
-            "--prompt-file",
-            str(prompt_path),
-            "--response-file",
-            str(response_path),
-            "--workdir",
-            str(workdir),
-            "--openclaw-bin",
-            config["OPENCLAW_BIN"],
-            "--openclaw-agent",
-            agent,
-            "--codex-bin",
-            config["CODEX_BIN"],
-            "--timeout",
-            str(timeout),
-            "--max-output-chars",
-            config["QIAOKELI_REMOTE_AGENT_MAX_OUTPUT_CHARS"],
-            "--host",
-            socket.gethostname(),
-            "--input-mode",
-            input_mode,
-        ],
-        start_new_session=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    return {
-        "workdir": str(workdir),
-        "reply": "百炼执行层任务已接受，正在由 Bailian 产出草案并交给 Codex 审阅。请稍后刷新同名 response 文件查看最终结果。",
-        "meta": {
-            "tool": "bailian+codex",
-            "timeout_seconds": timeout,
-            "async": True,
-            "review_required": True,
         },
     }
 
@@ -341,6 +389,62 @@ def handle_shell(command: dict[str, Any], config: dict[str, str]) -> dict[str, A
     }
 
 
+def handle_cloud_code(command: dict[str, Any], config: dict[str, str]) -> dict[str, Any]:
+    prompt = str(command.get("prompt") or command.get("message", "")).strip()
+    if not prompt:
+        raise ValueError("missing cloud code prompt")
+    permission_mode = require_agent_permission(command, config)
+    timeout = int(command.get("timeout") or config["QIAOKELI_REMOTE_AGENT_CLOUD_CODE_TIMEOUT"])
+    cwd = str(command.get("cwd") or config["QIAOKELI_REMOTE_AGENT_CODEX_WORKDIR"]).strip()
+    workdir = Path(cwd).expanduser().resolve()
+    if not workdir.exists():
+        raise FileNotFoundError(str(workdir))
+    mode_key = f"QIAOKELI_REMOTE_AGENT_CLOUD_CODE_ARGS_{permission_mode.upper()}"
+    permission_args = shlex.split(config.get(mode_key, ""))
+    completed = subprocess.run(
+        [config["CLAUDE_BIN"], *permission_args, "-p", prompt],
+        cwd=str(workdir),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+        check=False,
+    )
+    limit = int(config["QIAOKELI_REMOTE_AGENT_MAX_OUTPUT_CHARS"])
+    if completed.returncode != 0:
+        raise RuntimeError(trim_text(completed.stderr.strip() or completed.stdout.strip() or "cloud code command failed", limit))
+    return {
+        "workdir": str(workdir),
+        "reply": trim_text(completed.stdout.strip(), limit),
+        "meta": {"tool": "cloud-code", "timeout_seconds": timeout, "permission_mode": permission_mode},
+    }
+
+
+def handle_deepseek(command: dict[str, Any], config: dict[str, str]) -> dict[str, Any]:
+    prompt = str(command.get("prompt") or command.get("message", "")).strip()
+    if not prompt:
+        raise ValueError("missing deepseek prompt")
+    timeout = int(command.get("timeout") or config["QIAOKELI_REMOTE_AGENT_DEEPSEEK_TIMEOUT"])
+    args = [
+        config["DEEPSEEK_BIN"],
+        "--system",
+        "Reply concisely and directly.",
+        "--timeout",
+        str(timeout),
+        prompt,
+    ]
+    if str(command.get("pro", "")).strip().lower() in {"1", "true", "yes"}:
+        args.insert(1, "--pro")
+    rc, out, err = run_cmd(args, timeout=timeout + 15)
+    limit = int(config["QIAOKELI_REMOTE_AGENT_MAX_OUTPUT_CHARS"])
+    if rc != 0:
+        raise RuntimeError(trim_text(err.strip() or out.strip() or "deepseek command failed", limit))
+    return {
+        "reply": trim_text(out.strip(), limit),
+        "meta": {"tool": "qiaokeli-cheap", "timeout_seconds": timeout},
+    }
+
+
 def handle_read_file(command: dict[str, Any], config: dict[str, str]) -> dict[str, Any]:
     raw_path = str(command.get("path", "")).strip()
     if not raw_path:
@@ -348,9 +452,71 @@ def handle_read_file(command: dict[str, Any], config: dict[str, str]) -> dict[st
     path = Path(raw_path).expanduser().resolve()
     if not path.exists() or not path.is_file():
         raise FileNotFoundError(str(path))
+    roots = read_file_roots(config)
+    if roots and not any(path == root or path.is_relative_to(root) for root in roots):
+        raise PermissionError(f"read_file path is outside allowed roots: {path}")
     limit = int(command.get("max_chars") or config["QIAOKELI_REMOTE_AGENT_MAX_OUTPUT_CHARS"])
     content = path.read_text(errors="ignore")
     return {"path": str(path), "content": trim_text(content, limit)}
+
+
+def handle_android(command: dict[str, Any], command_id: str, config: dict[str, str]) -> dict[str, Any]:
+    timeout = int(command.get("timeout") or config["QIAOKELI_REMOTE_AGENT_ANDROID_TIMEOUT"])
+    action = str(command.get("action") or "status").strip()
+    runner = PROJECT_ROOT / "scripts" / "android_control.py"
+    output_dir = PROJECT_ROOT / "runtime" / "android" / command_id
+    args = [
+        "/usr/bin/python3",
+        str(runner),
+        action,
+        "--adb-bin",
+        str(command.get("adb_bin") or config["ANDROID_ADB_BIN"]),
+        "--output-dir",
+        str(output_dir),
+        "--timeout",
+        str(timeout),
+    ]
+    serial = str(command.get("serial") or config.get("ANDROID_ADB_SERIAL", "")).strip()
+    target = str(command.get("target") or config.get("ANDROID_ADB_TARGET", "")).strip()
+    if serial:
+        args.extend(["--serial", serial])
+    if target:
+        args.extend(["--target", target])
+
+    option_map = {
+        "port": "--port",
+        "x": "--x",
+        "y": "--y",
+        "x1": "--x1",
+        "y1": "--y1",
+        "x2": "--x2",
+        "y2": "--y2",
+        "duration_ms": "--duration-ms",
+        "text": "--text",
+        "key": "--key",
+        "package": "--package",
+        "activity": "--activity",
+        "url": "--url",
+        "local_path": "--local-path",
+        "remote_path": "--remote-path",
+        "playbook_file": "--playbook-file",
+    }
+    for key, flag in option_map.items():
+        if key in command and command[key] not in (None, ""):
+            args.extend([flag, str(command[key])])
+    if "shell_args" in command:
+        shell_args = command["shell_args"]
+        if isinstance(shell_args, str):
+            shell_args = ["sh", "-c", shell_args]
+        args.append("--shell-args")
+        args.extend(str(item) for item in shell_args)
+
+    rc, out, err = run_cmd(args, timeout=timeout + 30)
+    payload = json.loads(out) if out.strip().startswith("{") else {"raw_stdout": trim_text(out)}
+    payload["returncode"] = rc
+    if err.strip():
+        payload["stderr"] = trim_text(err)
+    return payload
 
 
 def handle_status(_command: dict[str, Any], _config: dict[str, str]) -> dict[str, Any]:
@@ -363,14 +529,20 @@ def process_command(command: dict[str, Any], config: dict[str, str], command_id:
         return handle_status(command, config)
     if command_type == "openclaw":
         return handle_openclaw(command, config)
+    if command_type == "browser":
+        return handle_browser(command, command_id, config)
     if command_type == "codex":
         return launch_codex_job(command, command_id, input_mode, config, paths)
-    if command_type == "hybrid":
-        return launch_hybrid_job(command, command_id, input_mode, config, paths)
+    if command_type == "cloud_code":
+        return handle_cloud_code(command, config)
+    if command_type == "deepseek":
+        return handle_deepseek(command, config)
     if command_type == "shell":
         return handle_shell(command, config)
     if command_type == "read_file":
         return handle_read_file(command, config)
+    if command_type == "android":
+        return handle_android(command, command_id, config)
     raise ValueError(f"unsupported command type: {command_type}")
 
 
@@ -389,13 +561,24 @@ def build_examples(paths: dict[str, Path]) -> None:
     examples = {
         "status.json": {"id": "phone-status", "type": "status"},
         "openclaw.json": {"id": "phone-openclaw", "type": "openclaw", "message": "汇报当前主机状态"},
+        "browser.json": {
+            "id": "phone-browser",
+            "type": "browser",
+            "playbook": {
+                "steps": [
+                    {"action": "open", "url": "https://example.com"},
+                    {"action": "wait", "text": "Example Domain", "timeout_ms": 10000},
+                    {"action": "evaluate", "fn": "() => ({title: document.title, href: location.href})", "save_as": "page_info"},
+                ]
+            },
+        },
         "codex.json": {"id": "phone-codex", "type": "codex", "prompt": "检查当前仓库 README 有没有明显问题，并直接给结论"},
-        "hybrid.json": {"id": "phone-hybrid", "type": "hybrid", "prompt": "先让百炼为当前任务生成执行草案，再让 Codex 做最终审阅，任务是：检查当前仓库 README 有没有明显问题，并给出最终结论。"},
         "shell.json": {"id": "phone-shell", "type": "shell", "cmd": "uname -a"},
+        "android-status.json": {"id": "phone-android-status", "type": "android", "action": "status"},
+        "android-screenshot.json": {"id": "phone-android-screenshot", "type": "android", "action": "screenshot"},
         "read_file.json": {"id": "phone-read-file", "type": "read_file", "path": str(Path.home() / ".openclaw" / "workspace" / "authorized_research" / "memory" / "rolling_memory.md")},
         "natural-language.txt": "巧克力，汇报当前主机状态，并告诉我 Syncthing 和 OpenClaw 是否正常。",
         "natural-codex.txt": "让 Codex 检查当前仓库 README 有没有明显问题，并直接告诉我结论。",
-        "natural-hybrid.txt": "先让百炼执行，再让 Codex 审阅：检查当前仓库 README 有没有明显问题，并直接告诉我最终结论。",
     }
     for name, body in examples.items():
         target = paths["examples"] / name
@@ -427,23 +610,6 @@ def parse_command_file(path: Path, mode: str) -> dict[str, Any]:
         return json.loads(path.read_text())
     message = path.read_text(errors="ignore").strip()
     lowered = message.lower()
-    hybrid_prefix_markers = [
-        r"^\s*/?hybrid[:：\s]",
-        r"^\s*(先)?让\s*(百炼|bailian)",
-        r"^\s*(先)?用\s*(百炼|bailian)",
-    ]
-    for pattern in hybrid_prefix_markers:
-        if re.search(pattern, lowered, flags=re.I) and re.search(r"(codex|审阅|审查|review|复核)", lowered, flags=re.I):
-            prompt = re.sub(pattern, "", message, count=1, flags=re.I).strip("：:，, \n\t")
-            return {"id": path.stem, "type": "hybrid", "prompt": prompt or message}
-
-    hybrid_anywhere_markers = [
-        r"(百炼|bailian).{0,24}(codex|审阅|审查|review|复核)",
-        r"(先).{0,24}(百炼|bailian).{0,40}(再).{0,24}(codex|审阅|审查|review|复核)",
-    ]
-    for pattern in hybrid_anywhere_markers:
-        if re.search(pattern, lowered, flags=re.I):
-            return {"id": path.stem, "type": "hybrid", "prompt": message}
 
     codex_prefix_markers = [
         r"^\s*/?codex[:：\s]",
@@ -503,7 +669,7 @@ def main() -> int:
                         "ok": True,
                         "type": str(command.get("type", "openclaw")),
                         "input_mode": mode,
-                        "status": "accepted" if str(command.get("type", "")).strip().lower() in {"codex", "hybrid"} else "completed",
+                        "status": "accepted" if str(command.get("type", "")).strip().lower() == "codex" else "completed",
                         "received_at": started_at,
                         "finished_at": now_iso(),
                         "host": socket.gethostname(),

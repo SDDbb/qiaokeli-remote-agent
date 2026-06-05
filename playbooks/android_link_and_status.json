@@ -1,0 +1,14 @@
+{
+  "steps": [
+    {
+      "action": "current_app"
+    },
+    {
+      "action": "open_url",
+      "url": "https://example.com"
+    },
+    {
+      "action": "screenshot"
+    }
+  ]
+}

@@ -8,7 +8,7 @@ sleep 2
 
 # Clean environment and start
 unset LD_LIBRARY_PATH
-cd /home/zhujintao/桌面/qiaokeli-remote-agent
+cd /home/zhujintao/桌面/02-agent-tools/remote-agent
 python scripts/openhands_tunnel_server.py >> tunnel.log 2>&1 &
 disown $!
 

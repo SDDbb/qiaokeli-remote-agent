@@ -1,0 +1,15 @@
+[Unit]
+Description=NexusDeck HTTP API for Qiaokeli remote-agent
+After=network-online.target qiaokeli-remote-agent.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/桌面/02-agent-tools/remote-agent
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 %h/桌面/02-agent-tools/remote-agent/scripts/remote_agent_api.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

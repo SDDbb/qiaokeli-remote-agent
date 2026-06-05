@@ -3,3 +3,9 @@ __pycache__/
 .venv/
 runtime/
 *.log
+
+_ai-scratch/
+
+nexusdeck-android/.gradle/
+nexusdeck-android/**/build/
+nexusdeck-android/local.properties

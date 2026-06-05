@@ -26,11 +26,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--response-file", required=True)
     parser.add_argument("--workdir", required=True)
     parser.add_argument("--codex-bin", required=True)
+    parser.add_argument("--codex-model", default="")
+    parser.add_argument("--permission-mode", default="workspace_write")
     parser.add_argument("--timeout", type=int, required=True)
     parser.add_argument("--max-output-chars", type=int, required=True)
     parser.add_argument("--host", required=True)
     parser.add_argument("--input-mode", required=True)
     return parser.parse_args()
+
+
+def codex_permission_args(mode: str) -> list[str]:
+    normalized = mode.strip().lower().replace("-", "_")
+    if normalized == "read_only":
+        return ["--sandbox", "read-only"]
+    if normalized == "workspace_write":
+        return ["--sandbox", "workspace-write"]
+    if normalized == "full_access":
+        return ["--sandbox", "danger-full-access"]
+    if normalized == "bypass":
+        return ["--dangerously-bypass-approvals-and-sandbox"]
+    return []
 
 
 def main() -> int:
@@ -49,18 +64,21 @@ def main() -> int:
         output_path = Path(handle.name)
 
     try:
+        command = [
+            args.codex_bin,
+            "exec",
+            "--skip-git-repo-check",
+            "--cd",
+            str(workdir),
+            "--output-last-message",
+            str(output_path),
+        ]
+        command[2:2] = codex_permission_args(args.permission_mode)
+        if args.codex_model.strip():
+            command[2:2] = ["--model", args.codex_model.strip()]
+        command.append(wrapped_prompt)
         completed = subprocess.run(
-            [
-                args.codex_bin,
-                "exec",
-                "--dangerously-bypass-approvals-and-sandbox",
-                "--skip-git-repo-check",
-                "--cd",
-                str(workdir),
-                "--output-last-message",
-                str(output_path),
-                wrapped_prompt,
-            ],
+            command,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -83,6 +101,7 @@ def main() -> int:
                     "meta": {
                         "tool": "codex-cli",
                         "timeout_seconds": args.timeout,
+                        "permission_mode": args.permission_mode,
                         "async": True,
                     },
                 },

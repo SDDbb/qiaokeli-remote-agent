@@ -4,7 +4,7 @@ After=network.target tailscale.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 %h/桌面/qiaokeli-remote-agent/scripts/openhands_tunnel_server.py
+ExecStart=/usr/bin/python3 %h/桌面/02-agent-tools/remote-agent/scripts/openhands_tunnel_server.py
 Restart=always
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1

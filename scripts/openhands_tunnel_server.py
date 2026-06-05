@@ -43,7 +43,7 @@ CONFIG_FILE = CONFIG_DIR / "tunnel_config.env"
 DEFAULT_CONFIG = {
     "QIAOKELI_OH_TUNNEL_HOST": "0.0.0.0",
     "QIAOKELI_OH_TUNNEL_PORT": "8765",
-    "QIAOKELI_OH_TUNNEL_WORKDIR": str(Path.home() / "桌面" / "openhands-playground"),
+    "QIAOKELI_OH_TUNNEL_WORKDIR": str(Path.home() / "桌面" / "02-agent-tools" / "openhands-playground"),
     "QIAOKELI_OH_TUNNEL_OPENHANDS_CMD": str(Path.home() / "桌面" / "openhands-playground/.venv/bin/python -m openhands.core.main"),
     "QIAOKELI_OH_TUNNEL_MAX_OUTPUT_BUFFER": "1048576",
     "QIAOKELI_OH_TUNNEL_PING_INTERVAL": "30",

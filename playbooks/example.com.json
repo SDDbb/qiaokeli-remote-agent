@@ -1,0 +1,17 @@
+{
+  "steps": [
+    {
+      "action": "open",
+      "url": "https://example.com"
+    },
+    {
+      "action": "wait",
+      "text": "Example Domain",
+      "timeout_ms": 10000
+    },
+    {
+      "action": "evaluate",
+      "fn": "() => ({title: document.title, href: location.href})"
+    }
+  ]
+}

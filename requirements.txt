@@ -1,0 +1,4 @@
+# remote-agent runtime dependencies
+# 绝大多数模块基于 Python 标准库（http.server / asyncio / subprocess / socket 等）。
+# 唯一的第三方依赖：WebSocket 服务端/客户端。
+websockets>=12.0

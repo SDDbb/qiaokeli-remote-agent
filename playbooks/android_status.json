@@ -1,0 +1,13 @@
+{
+  "steps": [
+    {
+      "action": "status"
+    },
+    {
+      "action": "screenshot"
+    },
+    {
+      "action": "ui_dump"
+    }
+  ]
+}
