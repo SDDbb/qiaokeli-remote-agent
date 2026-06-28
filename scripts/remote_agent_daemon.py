@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import socket
 import subprocess
 import time
@@ -33,22 +34,22 @@ DEFAULT_CONFIG = {
     "ANDROID_ADB_SERIAL": "",
     "ANDROID_ADB_TARGET": "",
     "ANDROID_UNLOCK_PIN": "",
-    "OPENCLAW_BIN": "/home/zhujintao/.nvm/versions/node/v22.22.0/bin/openclaw",
-    "CODEX_BIN": "/home/zhujintao/.nvm/versions/node/v22.22.0/bin/codex",
+    "OPENCLAW_BIN": shutil.which("openclaw") or "/home/zhujintao/.nvm/versions/node/v22.22.0/bin/openclaw",
+    "CODEX_BIN": shutil.which("codex") or "/home/zhujintao/.nvm/versions/node/v22.22.0/bin/codex",
+    "CLAUDE_BIN": shutil.which("claude") or "claude",
+    "DEEPSEEK_BIN": shutil.which("qiaokeli-cheap") or str(Path.home() / ".local" / "bin" / "qiaokeli-cheap"),
     "QIAOKELI_OPENCLAW_ROOT": str(Path.home() / "桌面" / "03-infra" / "openclaw-host"),
     "QIAOKELI_REMOTE_AGENT_CODEX_TIMEOUT": "300",
     "QIAOKELI_REMOTE_AGENT_CODEX_MODEL": "gpt-5.5",
     "QIAOKELI_REMOTE_AGENT_CODEX_WORKDIR": str(Path.home() / "桌面" / "01-finance" / "fin-agent"),
     "QIAOKELI_REMOTE_AGENT_MAX_AGENT_PERMISSION": "workspace_write",
     "QIAOKELI_REMOTE_AGENT_READ_FILE_ROOTS": f"{PROJECT_ROOT}:{DEFAULT_SHARED_ROOT}",
-    "CLAUDE_BIN": "claude",
     "QIAOKELI_REMOTE_AGENT_CLOUD_CODE_TIMEOUT": "300",
     "QIAOKELI_REMOTE_AGENT_CLOUD_CODE_ARGS_DEFAULT": "",
     "QIAOKELI_REMOTE_AGENT_CLOUD_CODE_ARGS_READ_ONLY": "--permission-mode plan",
     "QIAOKELI_REMOTE_AGENT_CLOUD_CODE_ARGS_WORKSPACE_WRITE": "",
     "QIAOKELI_REMOTE_AGENT_CLOUD_CODE_ARGS_FULL_ACCESS": "--permission-mode acceptEdits",
     "QIAOKELI_REMOTE_AGENT_CLOUD_CODE_ARGS_BYPASS": "--permission-mode bypassPermissions",
-    "DEEPSEEK_BIN": str(Path.home() / ".local" / "bin" / "qiaokeli-cheap"),
     "QIAOKELI_REMOTE_AGENT_DEEPSEEK_TIMEOUT": "120",
     "QIAOKELI_REMOTE_AGENT_HYBRID_AGENT": "resident",
     "QIAOKELI_REMOTE_AGENT_HYBRID_TIMEOUT": "420",
@@ -463,6 +464,27 @@ def handle_read_file(command: dict[str, Any], config: dict[str, str]) -> dict[st
 def handle_android(command: dict[str, Any], command_id: str, config: dict[str, str]) -> dict[str, Any]:
     timeout = int(command.get("timeout") or config["QIAOKELI_REMOTE_AGENT_ANDROID_TIMEOUT"])
     action = str(command.get("action") or "status").strip()
+    pin = str(config.get("ANDROID_UNLOCK_PIN", "")).strip()
+
+    # 需要解锁屏幕的动作，配置了PIN就自动解锁
+    UNLOCK_ACTIONS = {"tap", "open_url", "open_app", "screenshot", "ui_dump", "current_app",
+                       "keyevent", "swipe", "shell_args", "type", "push_file", "pull_file"}
+    if pin and action in UNLOCK_ACTIONS:
+        runner_script = PROJECT_ROOT / "scripts" / "android_control.py"
+        rc_locked, out_locked, _ = run_cmd(
+            ["/usr/bin/python3", str(runner_script), "lockscreen_state",
+             "--adb-bin", str(command.get("adb_bin") or config["ANDROID_ADB_BIN"])],
+            timeout=8)
+        try:
+            lock_data = json.loads(out_locked)
+            if lock_data.get("locked"):
+                run_cmd(
+                    ["/usr/bin/python3", str(runner_script), "enter_pin", pin,
+                     "--adb-bin", str(command.get("adb_bin") or config["ANDROID_ADB_BIN"])],
+                    timeout=10)
+        except Exception:
+            pass  # 解锁失败不影响主动作（可能是锁屏界面识别不准）
+
     runner = PROJECT_ROOT / "scripts" / "android_control.py"
     output_dir = PROJECT_ROOT / "runtime" / "android" / command_id
     args = [

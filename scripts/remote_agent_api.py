@@ -283,6 +283,12 @@ def quick_host_status(config: dict[str, str]) -> dict[str, Any]:
 
 def health(config: dict[str, str]) -> dict[str, Any]:
     host = quick_host_status(config)
+    backends = {}
+    for name, key in [("codex", "CODEX_BIN"), ("openclaw", "OPENCLAW_BIN"),
+                       ("claude", "CLAUDE_BIN"), ("deepseek", "DEEPSEEK_BIN")]:
+        bin_path = config.get(key, "")
+        backends[name] = {"available": bool(bin_path and Path(bin_path).exists()),
+                          "path": bin_path if Path(bin_path).exists() else None}
     return {
         "api": {
             "name": "NexusDeck API",
@@ -296,6 +302,7 @@ def health(config: dict[str, str]) -> dict[str, Any]:
         "adb": {"ok": None, "status": "not_checked", "message": "Use diagnostics for ADB status."},
         "capabilities": capabilities(),
         "max_agent_permission": max_agent_permission(config),
+        "backends": backends,
     }
 
 
