@@ -49,6 +49,20 @@ class AndroidControl:
             timeout=timeout or self.timeout,
             check=False,
         )
+        # 无线ADB容易断连：returncode 255 + device not found → 自动重连一次
+        if completed.returncode == 255 and "device" in completed.stderr.lower() and "not found" in completed.stderr.lower():
+            if self.serial and ":" in self.serial:
+                subprocess.run(
+                    [self.adb_bin, "connect", self.serial],
+                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=15, check=False,
+                )
+                # 重连后重试一次
+                completed = subprocess.run(
+                    self.adb_args(*args, use_serial=use_serial),
+                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=timeout or self.timeout, check=False,
+                )
         return completed.returncode, completed.stdout, completed.stderr
 
     def run_bytes(self, *args: str, timeout: int | None = None) -> tuple[int, bytes, bytes]:
